@@ -43,38 +43,88 @@ const queues = new Set<{}>();
 
 const _ = client({});
 _.connect();
+interface ClientOptions {
+    user: string;
+    password: string;
+    host: string;
+    port: number;
+}
 
-export function client(options: Partial<ClientOptions>) {
-    let channelId: number | null = null;
-    async function connect() { 
-        const socket = await Bun.connect({
+const D = new TextDecoder();
+const E = new TextEncoder();
+
+function createPacket() {}
+
+function client(options: Partial<ClientOptions>) {
+    let s: Socket;
+    let r: Function;
+    const p = new Promise((y) => (r = y));
+
+    function write(t: number, d: Uint8Array = new Uint8Array()) {
+        const b = new Uint8Array(d.length + 4 + (4 - ((d.length + 1) % 8)) % 8);
+
+        new DataView(d.buffer).setUint32(0, d.length + 1);
+        b[4] = t;
+
+        if (d.length > 0 && b.length >= d.length + 5) {
+            b.set(d, 5);
+        }
+
+        s.write(b);
+    }
+
+    async function connect() {
+        s = await Bun.connect({
             hostname: 'localhost',
-            port: 8080,
+            port: 22,
             socket: {
-                open(socket) {
+                error(socket, error) {
+                    console.error(error)
                 },
-                data(_, data) {
+                async open(socket) {
+                    write(255, E.encode('SSH-2.0-sshx\r\n'));
+                    write(SSH_MSG_KEXINIT);
+                    await p;
+                    write(SSH_MSG_USERAUTH_REQUEST, E.encode(options.user + `\x00${SSH_CONNECTION_STRING}\x00password\x00\x00` + options.password));
+                },
+                data(socket, data) {
                     const type = data[0];
                     const payload = data.subarray(0);
-
-                    type == SSH_MSG_CHANNEL_OPEN_CONFIRMATION
-                        ? channelId = payload.readUInt32BE(4)
-                        : type == SSH_MSG_CHANNEL_DATA
-                            ? (() => {
-                                const channel = payload.readUInt32BE(0);
-                                const content = decoder.decode(payload.subarray(4));       
-                            })()
-                            : type == SSH_MSG_CHANNEL_SUCCESS
-                                ? (() => {
-
-                                })()
-                                : ''
+                    console.log(type, D.decode(payload));
+    
+                    ({
+                        [SSH_MSG_SERVICE_ACCEPT]() {
+                            if(!options.user || !options.password) {
+                                console.log('pas de username ou de password')
+                                return;
+                            }
+                        },
+                        //[SSH_MSG_CHANNEL_OPEN_CONFIRMATION]: () => c = payload.readUInt32BE(4),
+                        [SSH_MSG_CHANNEL_DATA]() {
+                            const channel = payload.readUInt32BE(0);
+                            const content = D.decode(payload.subarray(4));
+                        },
+                        [SSH_MSG_USERAUTH_SUCCESS]() {
+                            console.log('connecté');
+        
+                        },
+                        [SSH_MSG_USERAUTH_FAILURE]() {
+        
+                        }
+                    })[type]();
                 }
             }
-        });
+        })
     }
 
     return {
         connect
     }
 }
+let c = client({
+    host: 'localhost',
+    port: 22,
+    user: 'test',
+    password: 'password'
+});
+await c.connect();
