@@ -38,60 +38,59 @@ const SSH_MSG_CHANNEL_REQUEST = 98;
 const SSH_MSG_CHANNEL_SUCCESS = 99;
 const SSH_MSG_CHANNEL_FAILURE = 100;
 
-const decoder = new TextDecoder();
-const queues = new Set<{}>();
-
-const _ = client({});
-_.connect();
-interface ClientOptions {
-    user: string;
-    password: string;
+interface TransportConnectionOptions {
     host: string;
     port: number;
+}
+
+interface ClientOptions extends TransportConnectionOptions {
+    user: string;
+    password: string;
 }
 
 const D = new TextDecoder();
 const E = new TextEncoder();
 
-function createPacket() {}
-
-function client(options: Partial<ClientOptions>) {
-    let s: Socket;
-    let r: Function;
-    const p = new Promise((y) => (r = y));
-
-    function write(t: number, d: Uint8Array = new Uint8Array()) {
-        const b = new Uint8Array(d.length + 4 + (4 - ((d.length + 1) % 8)) % 8);
-
-        new DataView(d.buffer).setUint32(0, d.length + 1);
-        b[4] = t;
-
-        if (d.length > 0 && b.length >= d.length + 5) {
-            b.set(d, 5);
+const createTransportConnection = async (options: TransportConnectionOptions) => {
+    const socket = await Bun.connect({
+        hostname: options.host,
+        port: options.port,
+        socket: {
+            data(socket, data) {}
         }
+    });
+    return socket;
+}
 
-        s.write(b);
-    }
+function createPacket(type: number, data: Uint8Array = new Uint8Array()): Uint8Array {
+    const buffer = Buffer.alloc(4);
+    buffer.writeUInt32BE(data.length, 0);
+    return Buffer.concat([Buffer.from([type]), buffer, data]);
+}
+
+const client = (options: Partial<ClientOptions>) => {
+    let socket: Socket;
 
     async function connect() {
-        s = await Bun.connect({
-            hostname: 'localhost',
-            port: 22,
+        socket = await Bun.connect({
+            hostname: options.host ?? 'localhost',
+            port: options.port ?? 22,
             socket: {
-                error(socket, error) {
-                    console.error(error)
-                },
-                async open(socket) {
-                    write(255, E.encode('SSH-2.0-sshx\r\n'));
-                    write(SSH_MSG_KEXINIT);
-                    await p;
-                    write(SSH_MSG_USERAUTH_REQUEST, E.encode(options.user + `\x00${SSH_CONNECTION_STRING}\x00password\x00\x00` + options.password));
+                open(socket) {
+                    console.log(createPacket(SSH_MSG_SERVICE_REQUEST, E.encode(SSH_USERAUTH_STRING)))
+                    socket.write(createPacket(SSH_MSG_SERVICE_REQUEST, E.encode(SSH_USERAUTH_STRING)));
+                    Bun.sleepSync(5000);
+                    socket.write(
+                        createPacket(
+                            SSH_MSG_USERAUTH_REQUEST, 
+                            E.encode(options.user + `\x00${SSH_CONNECTION_STRING}\x00password\x00\x00` + options.password)
+                        )
+                    );
                 },
                 data(socket, data) {
                     const type = data[0];
                     const payload = data.subarray(0);
                     console.log(type, D.decode(payload));
-    
                     ({
                         [SSH_MSG_SERVICE_ACCEPT]() {
                             if(!options.user || !options.password) {
@@ -106,25 +105,20 @@ function client(options: Partial<ClientOptions>) {
                         },
                         [SSH_MSG_USERAUTH_SUCCESS]() {
                             console.log('connecté');
-        
+    
                         },
                         [SSH_MSG_USERAUTH_FAILURE]() {
-        
+    
                         }
                     })[type]();
                 }
             }
-        })
+        });
+
+
     }
 
     return {
         connect
     }
 }
-let c = client({
-    host: 'localhost',
-    port: 22,
-    user: 'test',
-    password: 'password'
-});
-await c.connect();
